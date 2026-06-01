@@ -64,41 +64,44 @@ jobs:
           aarch64-linux-gnu-ar --version
           rustup target list | grep aarch64
 
-      - name: Create fresh Cargo home for aarch64
+      - name: Create Cargo config for aarch64
         run: |
-          mkdir -p /tmp/cargo-aarch64
-          mkdir -p /tmp/cargo-aarch64/registry
-          mkdir -p /tmp/cargo-aarch64/git
-          cat > /tmp/cargo-aarch64/config.toml << 'EOF'
+          mkdir -p ~/.cargo
+          cat > ~/.cargo/config.toml << 'EOF'
           [target.aarch64-unknown-linux-gnu]
           linker = "aarch64-linux-gnu-gcc"
           ar = "aarch64-linux-gnu-ar"
-          rustflags = ["-C", "link-arg=-fuse-ld=bfd", "-C", "lto=off", "-C", "codegen-units=1"]
+          rustflags = ["-C", "link-arg=-fuse-ld=bfd", "-C", "lto=off"]
           
           [build]
           jobs = 2
-          target-dir = "./target-aarch64"
-          
-          [source.crates-io]
-          replace-with = "vendored-sources"
-          
-          [source.vendored-sources]
-          directory = "vendor"
           EOF
 
-      - name: Cache Cargo registry (aarch64)
+      - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
-          path: /tmp/cargo-aarch64/registry
-          key: cargo-registry-aarch64-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-registry-aarch64-
+          path: ~/.cargo/registry/cache
+          key: cargo-registry-cache-aarch64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-cache-aarch64-
 
-      - name: Cache Cargo git (aarch64)
+      - name: Cache Cargo index
         uses: actions/cache@v4
         with:
-          path: /tmp/cargo-aarch64/git
-          key: cargo-git-aarch64-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-git-aarch64-
+          path: ~/.cargo/registry/index
+          key: cargo-registry-index-aarch64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-index-aarch64-
+
+      - name: Cache Cargo git
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git/cache
+          key: cargo-git-cache-aarch64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-git-cache-aarch64-
+
+      - name: Clean previous build artifacts
+        run: |
+          rm -rf target/
+          cargo clean
 
       - name: Build mullvad-cli (release)
         if: inputs.include_cli && inputs.build_type == 'release'
@@ -107,8 +110,6 @@ jobs:
             -p mullvad-cli \
             --target aarch64-unknown-linux-gnu \
             --release
-        env:
-          CARGO_HOME: /tmp/cargo-aarch64
 
       - name: Build mullvad-cli (debug)
         if: inputs.include_cli && inputs.build_type == 'debug'
@@ -116,8 +117,6 @@ jobs:
           cargo build \
             -p mullvad-cli \
             --target aarch64-unknown-linux-gnu
-        env:
-          CARGO_HOME: /tmp/cargo-aarch64
 
       - name: Build mullvad-daemon (release)
         if: inputs.include_daemon && inputs.build_type == 'release'
@@ -126,8 +125,6 @@ jobs:
             -p mullvad-daemon \
             --target aarch64-unknown-linux-gnu \
             --release
-        env:
-          CARGO_HOME: /tmp/cargo-aarch64
 
       - name: Build mullvad-daemon (debug)
         if: inputs.include_daemon && inputs.build_type == 'debug'
@@ -135,30 +132,24 @@ jobs:
           cargo build \
             -p mullvad-daemon \
             --target aarch64-unknown-linux-gnu
-        env:
-          CARGO_HOME: /tmp/cargo-aarch64
 
       - name: Prepare artifacts (release)
         if: inputs.build_type == 'release'
         run: |
           mkdir -p artifacts
           
-          if [ -f "target-aarch64/aarch64-unknown-linux-gnu/release/mullvad" ]; then
-            aarch64-linux-gnu-strip target-aarch64/aarch64-unknown-linux-gnu/release/mullvad -o artifacts/mullvad-cli
-            echo "✅ mullvad-cli built successfully"
+          if [ -f "target/aarch64-unknown-linux-gnu/release/mullvad" ]; then
+            aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/mullvad -o artifacts/mullvad-cli
+            echo "✅ mullvad-cli:"
             file artifacts/mullvad-cli
             ls -lh artifacts/mullvad-cli
-          else
-            echo "⚠️ mullvad-cli binary not found"
           fi
           
-          if [ -f "target-aarch64/aarch64-unknown-linux-gnu/release/mullvad-daemon" ]; then
-            aarch64-linux-gnu-strip target-aarch64/aarch64-unknown-linux-gnu/release/mullvad-daemon -o artifacts/mullvad-daemon
-            echo "✅ mullvad-daemon built successfully"
+          if [ -f "target/aarch64-unknown-linux-gnu/release/mullvad-daemon" ]; then
+            aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/mullvad-daemon -o artifacts/mullvad-daemon
+            echo "✅ mullvad-daemon:"
             file artifacts/mullvad-daemon
             ls -lh artifacts/mullvad-daemon
-          else
-            echo "⚠️ mullvad-daemon binary not found"
           fi
           
           if [ "$(ls -A artifacts 2>/dev/null)" ]; then
@@ -166,8 +157,7 @@ jobs:
             sha256sum * > SHA256SUMS
             cat SHA256SUMS
           else
-            echo "ERROR: No release artifacts generated!"
-            find target-aarch64 -name "mullvad*" -type f 2>/dev/null | head -20
+            echo "❌ ERROR: No release artifacts generated!"
             exit 1
           fi
 
@@ -176,22 +166,18 @@ jobs:
         run: |
           mkdir -p artifacts
           
-          if [ -f "target-aarch64/aarch64-unknown-linux-gnu/debug/mullvad" ]; then
-            cp target-aarch64/aarch64-unknown-linux-gnu/debug/mullvad artifacts/mullvad-cli-debug
-            echo "✅ mullvad-cli-debug built successfully"
+          if [ -f "target/aarch64-unknown-linux-gnu/debug/mullvad" ]; then
+            cp target/aarch64-unknown-linux-gnu/debug/mullvad artifacts/mullvad-cli-debug
+            echo "✅ mullvad-cli-debug:"
             file artifacts/mullvad-cli-debug
             ls -lh artifacts/mullvad-cli-debug
-          else
-            echo "⚠️ mullvad-cli-debug binary not found"
           fi
           
-          if [ -f "target-aarch64/aarch64-unknown-linux-gnu/debug/mullvad-daemon" ]; then
-            cp target-aarch64/aarch64-unknown-linux-gnu/debug/mullvad-daemon artifacts/mullvad-daemon-debug
-            echo "✅ mullvad-daemon-debug built successfully"
+          if [ -f "target/aarch64-unknown-linux-gnu/debug/mullvad-daemon" ]; then
+            cp target/aarch64-unknown-linux-gnu/debug/mullvad-daemon artifacts/mullvad-daemon-debug
+            echo "✅ mullvad-daemon-debug:"
             file artifacts/mullvad-daemon-debug
             ls -lh artifacts/mullvad-daemon-debug
-          else
-            echo "⚠️ mullvad-daemon-debug binary not found"
           fi
           
           if [ "$(ls -A artifacts 2>/dev/null)" ]; then
@@ -199,8 +185,7 @@ jobs:
             sha256sum * > SHA256SUMS
             cat SHA256SUMS
           else
-            echo "ERROR: No debug artifacts generated!"
-            find target-aarch64 -name "mullvad*" -type f 2>/dev/null | head -20
+            echo "❌ ERROR: No debug artifacts generated!"
             exit 1
           fi
 
