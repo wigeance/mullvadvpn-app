@@ -1,0 +1,244 @@
+name: OpenWrt aarch64 Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+      include_cli:
+        description: 'Build mullvad-cli'
+        required: true
+        default: true
+        type: boolean
+      include_daemon:
+        description: 'Build mullvad-daemon'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_AR: aarch64-linux-gnu-ar
+
+jobs:
+  build-openwrt-aarch64:
+    name: Build for OpenWrt aarch64
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            build-essential \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            protobuf-compiler \
+            pkg-config \
+            libssl-dev \
+            curl \
+            git
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install aarch64 target
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: Verify Rust installation
+        run: |
+          rustc --version --verbose
+          cargo --version
+          aarch64-linux-gnu-gcc --version
+          rustup target list | grep aarch64
+
+      - name: Configure Cargo for aarch64 cross-compilation
+        run: |
+          mkdir -p ~/.cargo
+          cat >> ~/.cargo/config.toml << 'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          ar = "aarch64-linux-gnu-ar"
+          rustflags = ["-C", "link-arg=-fuse-ld=bfd"]
+          
+          [build]
+          jobs = 2
+          EOF
+          cat ~/.cargo/config.toml
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-aarch64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-aarch64-
+
+      - name: Cache cargo git
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: cargo-git-aarch64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-git-aarch64-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target/aarch64-unknown-linux-gnu
+          key: cargo-build-aarch64-${{ github.sha }}
+          restore-keys: cargo-build-aarch64-
+
+      - name: Build mullvad-cli (release)
+        if: inputs.include_cli && inputs.build_type == 'release'
+        run: |
+          cargo build \
+            -p mullvad-cli \
+            --target aarch64-unknown-linux-gnu \
+            --release \
+            -vv
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=bfd -C lto=off"
+
+      - name: Build mullvad-cli (debug)
+        if: inputs.include_cli && inputs.build_type == 'debug'
+        run: |
+          cargo build \
+            -p mullvad-cli \
+            --target aarch64-unknown-linux-gnu \
+            -vv
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
+
+      - name: Build mullvad-daemon (release)
+        if: inputs.include_daemon && inputs.build_type == 'release'
+        run: |
+          cargo build \
+            -p mullvad-daemon \
+            --target aarch64-unknown-linux-gnu \
+            --release \
+            -vv
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=bfd -C lto=off"
+
+      - name: Build mullvad-daemon (debug)
+        if: inputs.include_daemon && inputs.build_type == 'debug'
+        run: |
+          cargo build \
+            -p mullvad-daemon \
+            --target aarch64-unknown-linux-gnu \
+            -vv
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
+
+      - name: Prepare artifacts (release)
+        if: inputs.build_type == 'release'
+        run: |
+          mkdir -p artifacts
+          
+          if [ -f "target/aarch64-unknown-linux-gnu/release/mullvad" ]; then
+            aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/mullvad -o artifacts/mullvad-cli
+            file artifacts/mullvad-cli
+          fi
+          
+          if [ -f "target/aarch64-unknown-linux-gnu/release/mullvad-daemon" ]; then
+            aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/mullvad-daemon -o artifacts/mullvad-daemon
+            file artifacts/mullvad-daemon
+          fi
+          
+          if [ "$(ls -A artifacts 2>/dev/null)" ]; then
+            cd artifacts
+            ls -lah
+            sha256sum * > SHA256SUMS
+            cat SHA256SUMS
+          else
+            echo "ERROR: No release artifacts generated!"
+            exit 1
+          fi
+
+      - name: Prepare artifacts (debug)
+        if: inputs.build_type == 'debug'
+        run: |
+          mkdir -p artifacts
+          
+          if [ -f "target/aarch64-unknown-linux-gnu/debug/mullvad" ]; then
+            cp target/aarch64-unknown-linux-gnu/debug/mullvad artifacts/mullvad-cli-debug
+            file artifacts/mullvad-cli-debug
+          fi
+          
+          if [ -f "target/aarch64-unknown-linux-gnu/debug/mullvad-daemon" ]; then
+            cp target/aarch64-unknown-linux-gnu/debug/mullvad-daemon artifacts/mullvad-daemon-debug
+            file artifacts/mullvad-daemon-debug
+          fi
+          
+          if [ "$(ls -A artifacts 2>/dev/null)" ]; then
+            cd artifacts
+            ls -lah
+            sha256sum * > SHA256SUMS
+            cat SHA256SUMS
+          else
+            echo "ERROR: No debug artifacts generated!"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-aarch64-binaries-${{ inputs.build_type }}
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error
+
+  build-summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: build-openwrt-aarch64
+    if: always()
+    
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: openwrt-aarch64-binaries-${{ inputs.build_type }}
+          path: artifacts/
+
+      - name: Generate build summary
+        run: |
+          {
+            echo "## ✅ OpenWrt aarch64 Build Complete"
+            echo ""
+            echo "**Build Configuration:**"
+            echo "- Build Type: \`${{ inputs.build_type }}\`"
+            echo "- Target: \`aarch64-unknown-linux-gnu\`"
+            echo "- Build CLI: \`${{ inputs.include_cli }}\`"
+            echo "- Build Daemon: \`${{ inputs.include_daemon }}\`"
+            echo ""
+            
+            if [ -d artifacts ] && [ "$(ls -A artifacts)" ]; then
+              echo "**✅ Artifacts Generated:**"
+              echo ""
+              cd artifacts
+              ls -lh | tail -n +2 | awk '{printf "- **%s** (%s)\n", $9, $5}'
+              echo ""
+              if [ -f SHA256SUMS ]; then
+                echo "**SHA256 Checksums:**"
+                echo ""
+                echo "\`\`\`"
+                cat SHA256SUMS
+                echo "\`\`\`"
+              fi
+            else
+              echo "❌ Build Failed - No artifacts generated"
+            fi
+          } >> $GITHUB_STEP_SUMMARY
