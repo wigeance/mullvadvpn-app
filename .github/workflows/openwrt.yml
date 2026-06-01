@@ -25,8 +25,6 @@ on:
 env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
-  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_AR: aarch64-linux-gnu-ar
 
 jobs:
   build-openwrt-aarch64:
@@ -65,26 +63,33 @@ jobs:
           aarch64-linux-gnu-gcc --version
           rustup target list | grep aarch64
 
+      - name: Clean build artifacts for target-specific build
+        run: |
+          rm -rf target/
+          rm -rf ~/.cargo/registry/cache
+          cargo clean
+
       - name: Configure Cargo for aarch64 cross-compilation
         run: |
           mkdir -p ~/.cargo
-          cat >> ~/.cargo/config.toml << 'EOF'
+          cat > ~/.cargo/config.toml << 'EOF'
           [target.aarch64-unknown-linux-gnu]
           linker = "aarch64-linux-gnu-gcc"
           ar = "aarch64-linux-gnu-ar"
-          rustflags = ["-C", "link-arg=-fuse-ld=bfd"]
+          rustflags = ["-C", "link-arg=-fuse-ld=bfd", "-C", "lto=off"]
           
           [build]
           jobs = 2
+          target-dir = "target"
           EOF
           cat ~/.cargo/config.toml
 
-      - name: Cache cargo registry
+      - name: Cache cargo registry (index only)
         uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry-aarch64-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-registry-aarch64-
+          path: ~/.cargo/registry/index
+          key: cargo-registry-index-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-index-
 
       - name: Cache cargo git
         uses: actions/cache@v4
@@ -93,33 +98,20 @@ jobs:
           key: cargo-git-aarch64-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-git-aarch64-
 
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target/aarch64-unknown-linux-gnu
-          key: cargo-build-aarch64-${{ github.sha }}
-          restore-keys: cargo-build-aarch64-
-
       - name: Build mullvad-cli (release)
         if: inputs.include_cli && inputs.build_type == 'release'
         run: |
           cargo build \
             -p mullvad-cli \
             --target aarch64-unknown-linux-gnu \
-            --release \
-            -vv
-        env:
-          RUSTFLAGS: "-C link-arg=-fuse-ld=bfd -C lto=off"
+            --release
 
       - name: Build mullvad-cli (debug)
         if: inputs.include_cli && inputs.build_type == 'debug'
         run: |
           cargo build \
             -p mullvad-cli \
-            --target aarch64-unknown-linux-gnu \
-            -vv
-        env:
-          RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
+            --target aarch64-unknown-linux-gnu
 
       - name: Build mullvad-daemon (release)
         if: inputs.include_daemon && inputs.build_type == 'release'
@@ -127,20 +119,14 @@ jobs:
           cargo build \
             -p mullvad-daemon \
             --target aarch64-unknown-linux-gnu \
-            --release \
-            -vv
-        env:
-          RUSTFLAGS: "-C link-arg=-fuse-ld=bfd -C lto=off"
+            --release
 
       - name: Build mullvad-daemon (debug)
         if: inputs.include_daemon && inputs.build_type == 'debug'
         run: |
           cargo build \
             -p mullvad-daemon \
-            --target aarch64-unknown-linux-gnu \
-            -vv
-        env:
-          RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
+            --target aarch64-unknown-linux-gnu
 
       - name: Prepare artifacts (release)
         if: inputs.build_type == 'release'
@@ -150,20 +136,22 @@ jobs:
           if [ -f "target/aarch64-unknown-linux-gnu/release/mullvad" ]; then
             aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/mullvad -o artifacts/mullvad-cli
             file artifacts/mullvad-cli
+            ls -lh artifacts/mullvad-cli
           fi
           
           if [ -f "target/aarch64-unknown-linux-gnu/release/mullvad-daemon" ]; then
             aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/mullvad-daemon -o artifacts/mullvad-daemon
             file artifacts/mullvad-daemon
+            ls -lh artifacts/mullvad-daemon
           fi
           
           if [ "$(ls -A artifacts 2>/dev/null)" ]; then
             cd artifacts
-            ls -lah
             sha256sum * > SHA256SUMS
             cat SHA256SUMS
           else
             echo "ERROR: No release artifacts generated!"
+            ls -la target/aarch64-unknown-linux-gnu/release/ || echo "Release directory not found"
             exit 1
           fi
 
@@ -175,20 +163,22 @@ jobs:
           if [ -f "target/aarch64-unknown-linux-gnu/debug/mullvad" ]; then
             cp target/aarch64-unknown-linux-gnu/debug/mullvad artifacts/mullvad-cli-debug
             file artifacts/mullvad-cli-debug
+            ls -lh artifacts/mullvad-cli-debug
           fi
           
           if [ -f "target/aarch64-unknown-linux-gnu/debug/mullvad-daemon" ]; then
             cp target/aarch64-unknown-linux-gnu/debug/mullvad-daemon artifacts/mullvad-daemon-debug
             file artifacts/mullvad-daemon-debug
+            ls -lh artifacts/mullvad-daemon-debug
           fi
           
           if [ "$(ls -A artifacts 2>/dev/null)" ]; then
             cd artifacts
-            ls -lah
             sha256sum * > SHA256SUMS
             cat SHA256SUMS
           else
             echo "ERROR: No debug artifacts generated!"
+            ls -la target/aarch64-unknown-linux-gnu/debug/ || echo "Debug directory not found"
             exit 1
           fi
 
@@ -226,7 +216,7 @@ jobs:
             echo ""
             
             if [ -d artifacts ] && [ "$(ls -A artifacts)" ]; then
-              echo "**✅ Artifacts Generated:**"
+              echo "**✅ Build Successful - Artifacts Generated:**"
               echo ""
               cd artifacts
               ls -lh | tail -n +2 | awk '{printf "- **%s** (%s)\n", $9, $5}'
